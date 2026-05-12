@@ -1,4 +1,4 @@
-use biome_js_syntax::{JsTemplateChunkElement, JsTemplateElement};
+use biome_js_syntax::{JsStringLiteralExpression, JsTemplateChunkElement, JsTemplateElement};
 use biome_rowan::{AstNode, TextRange, TextSize, TokenText};
 use std::cmp::Ordering;
 
@@ -267,6 +267,50 @@ impl TemplateLiteralSpaceContext {
         })
     }
 
+    /// Detect space context for string literals inside template expressions.
+    ///
+    /// For example, in `` `map${isActive ? ' active' : ''}` ``, the string literal
+    /// `' active'` has a leading space that separates it from the preceding chunk `map`.
+    /// This space should be preserved during sorting.
+    pub(crate) fn from_string_literal_in_template(
+        string_lit: &JsStringLiteralExpression,
+    ) -> Option<Self> {
+        use biome_js_syntax::JsTemplateExpression;
+
+        let value = string_lit.inner_string_text().ok()?;
+        if value.trim().is_empty() {
+            return None;
+        }
+
+        // Walk up to find a JsTemplateElement ancestor
+        for ancestor in string_lit.syntax().ancestors().skip(1) {
+            if JsTemplateElement::can_cast(ancestor.kind()) {
+                // Check if this template element is adjacent to a template chunk
+                let prefix_is_var = ancestor
+                    .prev_sibling()
+                    .is_some_and(|s| JsTemplateChunkElement::can_cast(s.kind()));
+                let postfix_is_var = ancestor
+                    .next_sibling()
+                    .is_some_and(|s| JsTemplateChunkElement::can_cast(s.kind()));
+
+                if prefix_is_var || postfix_is_var {
+                    return Some(Self {
+                        prefix_is_var,
+                        postfix_is_var,
+                        leading_space: value.starts_with(' '),
+                        trailing_space: value.ends_with(' '),
+                    });
+                }
+                return None;
+            }
+            if JsTemplateExpression::can_cast(ancestor.kind()) {
+                break;
+            }
+        }
+
+        None
+    }
+
     /// Skip first class from sorting when it's connected to a variable: `${var}px-2 m-4`
     #[inline]
     pub(crate) fn ignore_prefix(&self) -> bool {
@@ -302,6 +346,9 @@ pub(crate) fn get_template_literal_space_context(
     match node {
         AnyClassStringLike::JsTemplateChunkElement(chunk) => {
             TemplateLiteralSpaceContext::from_chunk(chunk)
+        }
+        AnyClassStringLike::JsStringLiteralExpression(string_lit) => {
+            TemplateLiteralSpaceContext::from_string_literal_in_template(string_lit)
         }
         _ => None,
     }
